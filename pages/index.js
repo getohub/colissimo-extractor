@@ -1,24 +1,44 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef } from "react";
 import Head from "next/head";
 import * as XLSX from "xlsx";
 
-const STATUS = { IDLE: "idle", LOADING: "loading", DONE: "done", ERROR: "error" };
+const STATUS = { IDLE: "idle", QUEUED: "queued", LOADING: "loading", DONE: "done", ERROR: "error" };
 
 export default function Home() {
   const [status, setStatus] = useState(STATUS.IDLE);
+  const [queue, setQueue] = useState([]); // fichiers en attente
   const [results, setResults] = useState([]);
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef();
 
-  const process = useCallback(async (files) => {
-    if (!files.length) return;
+  const addFiles = (newFiles) => {
+    const pdfs = [...newFiles].filter((f) => f.type === "application/pdf");
+    if (!pdfs.length) return;
+    setQueue((prev) => {
+      const existingNames = new Set(prev.map((f) => f.name));
+      const unique = pdfs.filter((f) => !existingNames.has(f.name));
+      return [...prev, ...unique];
+    });
+    setStatus(STATUS.QUEUED);
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const removeFile = (idx) => {
+    setQueue((prev) => {
+      const next = prev.filter((_, i) => i !== idx);
+      if (next.length === 0) setStatus(STATUS.IDLE);
+      return next;
+    });
+  };
+
+  const extract = async () => {
+    if (!queue.length) return;
     setStatus(STATUS.LOADING);
     setError("");
-    setResults([]);
 
     const fd = new FormData();
-    for (const f of files) fd.append("pdfs", f);
+    for (const f of queue) fd.append("pdfs", f);
 
     try {
       const r = await fetch("/api/extract", { method: "POST", body: fd });
@@ -30,26 +50,23 @@ export default function Home() {
       setError(e.message);
       setStatus(STATUS.ERROR);
     }
-  }, []);
+  };
 
-  const onFileChange = (e) => process([...e.target.files]);
+  const onFileChange = (e) => addFiles(e.target.files);
 
   const onDrop = (e) => {
     e.preventDefault();
     setDragging(false);
-    const files = [...e.dataTransfer.files].filter((f) => f.type === "application/pdf");
-    process(files);
+    addFiles(e.dataTransfer.files);
   };
 
   const exportCSV = () => {
-    const header = ["Fichier", "Destinataire", "Adresse Complète", "Téléphone", "Source"];
-    const rows = results.map((r) => [
-      r.fichier, r.nom_complet, r.adresse_complete, r.telephone, r.source,
-    ]);
-    const csvContent = [header, ...rows]
+    const header = ["Fichier", "Destinataire", "Adresse Complète", "Téléphone"];
+    const rows = results.map((r) => [r.fichier, r.nom_complet, r.adresse_complete, r.telephone]);
+    const csv = [header, ...rows]
       .map((row) => row.map((v) => `"${(v ?? "").replace(/"/g, '""')}"`).join(","))
       .join("\n");
-    download("destinataires_colissimo.csv", "text/csv;charset=utf-8;", "\uFEFF" + csvContent);
+    download("destinataires_colissimo.csv", "text/csv;charset=utf-8;", "\uFEFF" + csv);
   };
 
   const exportExcel = () => {
@@ -59,7 +76,6 @@ export default function Home() {
         Destinataire: r.nom_complet,
         "Adresse Complète": r.adresse_complete,
         Téléphone: r.telephone,
-        Source: r.source,
       }))
     );
     const wb = XLSX.utils.book_new();
@@ -79,10 +95,13 @@ export default function Home() {
 
   const reset = () => {
     setStatus(STATUS.IDLE);
+    setQueue([]);
     setResults([]);
     setError("");
     if (inputRef.current) inputRef.current.value = "";
   };
+
+  const showDropzone = status !== STATUS.LOADING && status !== STATUS.DONE;
 
   return (
     <>
@@ -94,59 +113,88 @@ export default function Home() {
       </Head>
 
       <div className="root">
-        {/* Header */}
         <header>
           <div className="logo-area">
-            <span className="logo-dot" />
-            <span className="logo-text">COLISSIMO EXTRACTOR</span>
+            <img src="/logo-api.png" alt="Logo" className="logo-img" />
+            <span className="logo-text">API-Goudouneix</span>
           </div>
           <p className="subtitle">Import PDF · Extraction destinataires · Export CSV / Excel</p>
         </header>
 
         <main>
-          {/* Drop Zone */}
-          <div
-            className={`dropzone ${dragging ? "dragging" : ""} ${status === STATUS.LOADING ? "loading" : ""}`}
-            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={onDrop}
-            onClick={() => status !== STATUS.LOADING && inputRef.current?.click()}
-          >
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".pdf"
-              multiple
-              style={{ display: "none" }}
-              onChange={onFileChange}
-            />
-            {status === STATUS.LOADING ? (
-              <div className="loader-area">
-                <div className="spinner" />
-                <span>Extraction en cours…</span>
-              </div>
-            ) : (
-              <>
-                <div className="drop-icon">⊕</div>
-                <p className="drop-label">Glissez vos PDFs Colissimo ici</p>
-                <p className="drop-sub">ou cliquez pour sélectionner · Plusieurs fichiers acceptés</p>
-              </>
-            )}
-          </div>
-
-          {/* Error */}
-          {status === STATUS.ERROR && (
-            <div className="error-box">
-              <strong>Erreur :</strong> {error}
-              <button className="btn-reset" onClick={reset}>Réessayer</button>
+          {/* Zone de dépôt — visible tant qu'on n'est pas en cours ou terminé */}
+          {showDropzone && (
+            <div
+              className={`dropzone ${dragging ? "dragging" : ""}`}
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              onClick={() => inputRef.current?.click()}
+            >
+              <input
+                ref={inputRef}
+                type="file"
+                accept=".pdf"
+                multiple
+                style={{ display: "none" }}
+                onChange={onFileChange}
+              />
+              <div className="drop-icon">⊕</div>
+              <p className="drop-label">
+                {status === STATUS.QUEUED ? "Ajouter d'autres PDFs" : "Glissez vos PDFs Colissimo ici"}
+              </p>
+              <p className="drop-sub">ou cliquez pour sélectionner · Plusieurs fichiers acceptés</p>
             </div>
           )}
 
-          {/* Results */}
+          {/* Spinner extraction */}
+          {status === STATUS.LOADING && (
+            <div className="loading-area">
+              <div className="spinner" />
+              <span>Extraction en cours…</span>
+            </div>
+          )}
+
+          {/* Erreur */}
+          {status === STATUS.ERROR && (
+            <div className="error-box">
+              <strong>Erreur :</strong> {error}
+              <button className="btn btn-reset" onClick={reset}>Réessayer</button>
+            </div>
+          )}
+
+          {/* File en attente */}
+          {status === STATUS.QUEUED && queue.length > 0 && (
+            <div className="queue-area">
+              <div className="queue-header">
+                <span className="queue-count">{queue.length} fichier{queue.length > 1 ? "s" : ""} prêt{queue.length > 1 ? "s" : ""}</span>
+                <div className="queue-actions">
+                  <button className="btn btn-extract" onClick={extract}>
+                    ▶ Extraire les destinataires
+                  </button>
+                  <button className="btn btn-reset" onClick={reset}>Tout effacer</button>
+                </div>
+              </div>
+
+              <div className="file-list">
+                {queue.map((f, i) => (
+                  <div key={i} className="file-item">
+                    <span className="file-icon">📄</span>
+                    <span className="file-name" title={f.name}>{f.name}</span>
+                    <button className="file-remove" onClick={() => removeFile(i)} title="Retirer">✕</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Résultats */}
           {status === STATUS.DONE && results.length > 0 && (
             <div className="results-area">
               <div className="results-header">
-                <span className="results-count">{results.length} destinataire{results.length > 1 ? "s" : ""} extrait{results.length > 1 ? "s" : ""}</span>
+                <span className="results-count">
+                  {results.length} destinataire{results.length > 1 ? "s" : ""} extrait{results.length > 1 ? "s" : ""}
+                </span>
                 <div className="export-btns">
                   <button className="btn btn-csv" onClick={exportCSV}>↓ CSV</button>
                   <button className="btn btn-xlsx" onClick={exportExcel}>↓ Excel</button>
@@ -162,7 +210,6 @@ export default function Home() {
                       <th>Destinataire</th>
                       <th>Adresse</th>
                       <th>Téléphone</th>
-                      <th>Source</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -180,11 +227,6 @@ export default function Home() {
                             <td className="cell-mono">{r.telephone || <span className="empty">—</span>}</td>
                           </>
                         )}
-                        <td>
-                          <span className={`badge badge-${r.source === "ocr" ? "ocr" : r.source === "native" ? "native" : "error"}`}>
-                            {r.source || "?"}
-                          </span>
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -199,20 +241,19 @@ export default function Home() {
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         :root {
-          --bg: #0e0f11;
-          --surface: #16181c;
-          --border: #2a2d35;
-          --accent: #f0c040;
-          --accent2: #4af0a0;
-          --text: #e8eaf0;
-          --muted: #6b7080;
-          --error: #f05a5a;
+          --bg: #f4f5f7;
+          --surface: #ffffff;
+          --border: #dde1e9;
+          --accent: #2563eb;
+          --accent2: #0ea572;
+          --text: #1a1d27;
+          --muted: #7a8099;
+          --error: #dc2626;
           --font-display: 'Syne', sans-serif;
           --font-mono: 'DM Mono', monospace;
         }
 
         html, body { background: var(--bg); color: var(--text); font-family: var(--font-mono); min-height: 100vh; }
-
         .root { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
 
         header {
@@ -221,7 +262,7 @@ export default function Home() {
           margin-bottom: 2.5rem;
         }
         .logo-area { display: flex; align-items: center; gap: .75rem; margin-bottom: .5rem; }
-        .logo-dot { width: 14px; height: 14px; background: var(--accent); border-radius: 50%; flex-shrink: 0; }
+        .logo-img { height: 36px; width: auto; }
         .logo-text { font-family: var(--font-display); font-size: 1.5rem; font-weight: 800; letter-spacing: .04em; color: var(--text); }
         .subtitle { font-size: .78rem; color: var(--muted); letter-spacing: .06em; }
 
@@ -229,25 +270,26 @@ export default function Home() {
         .dropzone {
           border: 2px dashed var(--border);
           border-radius: 12px;
-          padding: 3.5rem 2rem;
+          padding: 3rem 2rem;
           text-align: center;
           cursor: pointer;
           transition: border-color .2s, background .2s;
           background: var(--surface);
-          position: relative;
           user-select: none;
         }
         .dropzone:hover, .dropzone.dragging {
           border-color: var(--accent);
-          background: #1a1c20;
+          background: #eef2ff;
         }
-        .dropzone.loading { cursor: default; pointer-events: none; }
-
         .drop-icon { font-size: 2.8rem; line-height: 1; color: var(--accent); margin-bottom: 1rem; }
         .drop-label { font-family: var(--font-display); font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: .4rem; }
         .drop-sub { font-size: .75rem; color: var(--muted); }
 
-        .loader-area { display: flex; flex-direction: column; align-items: center; gap: 1rem; color: var(--muted); font-size: .85rem; }
+        /* Spinner */
+        .loading-area {
+          display: flex; flex-direction: column; align-items: center;
+          gap: 1rem; padding: 4rem 0; color: var(--muted); font-size: .85rem;
+        }
         .spinner {
           width: 36px; height: 36px;
           border: 3px solid var(--border);
@@ -257,94 +299,96 @@ export default function Home() {
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* Error */
+        /* Erreur */
         .error-box {
           margin-top: 1.5rem;
-          background: rgba(240,90,90,.1);
+          background: rgba(220,38,38,.07);
           border: 1px solid var(--error);
           border-radius: 8px;
           padding: 1rem 1.25rem;
           color: var(--error);
           font-size: .85rem;
-          display: flex;
-          align-items: center;
-          gap: 1rem;
+          display: flex; align-items: center; gap: 1rem;
         }
 
-        /* Results */
-        .results-area { margin-top: 2rem; }
-        .results-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 1rem;
-          flex-wrap: wrap;
-          gap: .75rem;
+        /* File queue */
+        .queue-area { margin-top: 1.5rem; }
+        .queue-header {
+          display: flex; justify-content: space-between; align-items: center;
+          margin-bottom: 1rem; flex-wrap: wrap; gap: .75rem;
         }
-        .results-count {
-          font-family: var(--font-display);
-          font-size: 1rem;
-          font-weight: 700;
-          color: var(--accent2);
+        .queue-count {
+          font-family: var(--font-display); font-size: 1rem; font-weight: 700; color: var(--text);
         }
-        .export-btns { display: flex; gap: .5rem; flex-wrap: wrap; }
+        .queue-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
 
+        .file-list {
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          overflow: hidden;
+          background: var(--surface);
+        }
+        .file-item {
+          display: flex; align-items: center; gap: .75rem;
+          padding: .65rem 1rem;
+          border-bottom: 1px solid var(--border);
+          font-size: .82rem;
+          transition: background .15s;
+        }
+        .file-item:last-child { border-bottom: none; }
+        .file-item:hover { background: rgba(37,99,235,.03); }
+        .file-icon { font-size: 1rem; flex-shrink: 0; }
+        .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+        .file-remove {
+          background: none; border: none; cursor: pointer;
+          color: var(--muted); font-size: .8rem; padding: .2rem .4rem;
+          border-radius: 4px; transition: all .15s; flex-shrink: 0;
+        }
+        .file-remove:hover { background: rgba(220,38,38,.1); color: var(--error); }
+
+        /* Boutons */
         .btn {
-          font-family: var(--font-mono);
-          font-size: .75rem;
-          font-weight: 500;
-          letter-spacing: .05em;
-          padding: .45rem 1rem;
-          border-radius: 6px;
-          border: 1px solid;
-          cursor: pointer;
-          transition: all .15s;
+          font-family: var(--font-mono); font-size: .75rem; font-weight: 500;
+          letter-spacing: .05em; padding: .45rem 1rem;
+          border-radius: 6px; border: 1px solid; cursor: pointer; transition: all .15s;
         }
+        .btn-extract { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .btn-extract:hover { background: #1d4ed8; border-color: #1d4ed8; }
         .btn-csv { background: transparent; border-color: var(--accent); color: var(--accent); }
-        .btn-csv:hover { background: var(--accent); color: var(--bg); }
+        .btn-csv:hover { background: var(--accent); color: #fff; }
         .btn-xlsx { background: transparent; border-color: var(--accent2); color: var(--accent2); }
-        .btn-xlsx:hover { background: var(--accent2); color: var(--bg); }
+        .btn-xlsx:hover { background: var(--accent2); color: #fff; }
         .btn-reset { background: transparent; border-color: var(--border); color: var(--muted); }
         .btn-reset:hover { border-color: var(--muted); color: var(--text); }
 
-        /* Table */
+        /* Résultats */
+        .results-area { margin-top: 2rem; }
+        .results-header {
+          display: flex; justify-content: space-between; align-items: center;
+          margin-bottom: 1rem; flex-wrap: wrap; gap: .75rem;
+        }
+        .results-count { font-family: var(--font-display); font-size: 1rem; font-weight: 700; color: var(--accent2); }
+        .export-btns { display: flex; gap: .5rem; flex-wrap: wrap; }
+
         .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
         table { width: 100%; border-collapse: collapse; font-size: .8rem; }
         thead { background: var(--surface); }
         th {
-          padding: .75rem 1rem;
-          text-align: left;
-          font-size: .7rem;
-          letter-spacing: .08em;
-          color: var(--muted);
-          font-weight: 500;
-          border-bottom: 1px solid var(--border);
-          white-space: nowrap;
+          padding: .75rem 1rem; text-align: left; font-size: .7rem;
+          letter-spacing: .08em; color: var(--muted); font-weight: 500;
+          border-bottom: 1px solid var(--border); white-space: nowrap;
         }
         td {
-          padding: .7rem 1rem;
-          border-bottom: 1px solid var(--border);
-          vertical-align: middle;
-          color: var(--text);
+          padding: .7rem 1rem; border-bottom: 1px solid var(--border);
+          vertical-align: middle; color: var(--text);
         }
         tr:last-child td { border-bottom: none; }
-        tr:hover td { background: rgba(255,255,255,.02); }
+        tr:hover td { background: rgba(37,99,235,.04); }
         tr.row-error td { color: var(--error); }
 
-        .cell-file { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+        .cell-file { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
         .cell-mono { font-family: var(--font-mono); letter-spacing: .03em; }
         .empty { color: var(--border); }
-
-        .badge {
-          display: inline-block;
-          padding: .2rem .5rem;
-          border-radius: 4px;
-          font-size: .65rem;
-          letter-spacing: .06em;
-          font-weight: 500;
-        }
-        .badge-native { background: rgba(74,240,160,.12); color: var(--accent2); }
-        .badge-ocr { background: rgba(240,192,64,.12); color: var(--accent); }
 
         @media (max-width: 600px) {
           th, td { padding: .5rem .6rem; }

@@ -32,14 +32,22 @@ export default async function handler(req, res) {
         if (!fileList.length) return reject(new Error("Aucun fichier reçu"));
 
         const paths = fileList.map((f) => f.filepath ?? f.path);
+        const origNames = fileList.map((f) => f.originalFilename ?? f.name ?? "fichier.pdf");
+        // On passe chaque fichier sous la forme "tmppath|||nomoriginal"
+        const fileArgs = paths.map((p, i) => `${p}|||${origNames[i]}`);
+        // En production (after PyInstaller) : scripts/dist/extract.exe
+        // En développement : appel Python classique
+        const exePath = path.join(process.cwd(), "scripts", "dist", "extract.exe");
         const scriptPath = path.join(process.cwd(), "scripts", "extract.py");
-        
-        // Utilisation du chemin absolu de Python sur Windows
-        const pythonDefault = path.join(process.env.LOCALAPPDATA, "Programs", "Python", "Python312", "python.exe");
+        const pythonDefault = path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python312", "python.exe");
         const python = process.env.PYTHON_BIN || (fs.existsSync(pythonDefault) ? pythonDefault : "python");
 
+        const [bin, args] = fs.existsSync(exePath)
+          ? [exePath, fileArgs]
+          : [python, [scriptPath, ...fileArgs]];
+
         try {
-          const extractionResults = await runPython(python, [scriptPath, ...paths]);
+          const extractionResults = await runPython(bin, args);
           // Nettoyage fichiers tmp après extraction
           paths.forEach((p) => { try { fs.unlinkSync(p); } catch {} });
           resolve(extractionResults);

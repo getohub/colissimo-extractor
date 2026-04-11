@@ -1,4 +1,4 @@
-# Colissimo Extractor
+# API-Goudouneix
 
 Outil ponctuel d'extraction des destinataires depuis des PDFs Colissimo.
 
