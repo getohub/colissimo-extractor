@@ -142,27 +142,38 @@ def parse_destinataire(text: str) -> dict:
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-    # 1. Téléphone — recherche globale dans tout le texte extrait
-    found_tel = None
-    for line in lines:
-        m = TEL_PATTERN.search(line)
-        if m:
-            found_tel = re.sub(r"[\s.\-]", "", m.group(0))
-            # Normaliser +33X → 0X
-            if found_tel.startswith("+33"):
-                found_tel = "0" + found_tel[3:]
-            break
-    result["telephone"] = found_tel or ""
-
-    # 2. Trouver l'ancrage "Adresse du destinataire"
+    # 1. Trouver l'ancrage "Adresse du destinataire"
     dest_idx = -1
     for i, line in enumerate(lines):
-        if re.search(r"adresse\s*du\s*destinataire", line, re.IGNORECASE):
+        if re.search(r"adresse\s*(du\s*)?destinataire", line, re.IGNORECASE):
             dest_idx = i
             break
 
     if dest_idx == -1:
+        # Debug: on affiche sur stderr si l'ancre n'est pas trouvée
+        print(f"DEBUG: Anchor not found in file", file=sys.stderr)
+        # Fallback : recherche globale uniquement si l'ancre n'est pas trouvée
+        found_tel = None
+        for line in lines:
+            m = TEL_PATTERN.search(line)
+            if m:
+                found_tel = re.sub(r"[\s.\-]", "", m.group(0))
+                if found_tel.startswith("+33"):
+                    found_tel = "0" + found_tel[3:]
+                break
+        result["telephone"] = found_tel or ""
         return result
+
+    # 2. Chercher le téléphone spécifiquement APRÈS l'ancrage
+    found_tel = None
+    for j in range(dest_idx, min(dest_idx + 20, len(lines))):
+        m = TEL_PATTERN.search(lines[j])
+        if m:
+            found_tel = re.sub(r"[\s.\-]", "", m.group(0))
+            if found_tel.startswith("+33"):
+                found_tel = "0" + found_tel[3:]
+            break
+    result["telephone"] = found_tel or ""
 
     # 3. Collecter les lignes candidates après l'ancrage
     candidate_lines = []
@@ -176,11 +187,12 @@ def parse_destinataire(text: str) -> dict:
         # Ignorer les labels standalone parasites
         if NOISE_LABEL_RE.match(line):
             continue
-        # Ignorer les lignes qui ne contiennent QUE le numéro de téléphone
-        if found_tel:
-            line_without_tel = TEL_PATTERN.sub("", line).strip(" :,.-")
-            if not line_without_tel:
-                continue
+        # Ignorer les lignes qui ne contiennent QUE le numéro de téléphone (ou avec label Tél:)
+        line_without_tel = TEL_PATTERN.sub("", line)
+        line_without_labels = NOISE_LABEL_RE.sub("", line_without_tel).strip(" :,.-")
+        if not line_without_labels:
+            continue
+
         candidate_lines.append(line)
 
     if not candidate_lines:
@@ -240,12 +252,19 @@ def process_pdf(pdf_path: str) -> dict:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    # Si des arguments sont passés (cas classique ou petit nombre de fichiers)
+    # Sinon, on lit la liste depuis l'entrée standard (pour les gros volumes)
+    if len(sys.argv) > 1:
+        input_args = sys.argv[1:]
+    else:
+        input_args = [line.strip() for line in sys.stdin if line.strip()]
+
+    if not input_args:
         print(json.dumps({"error": "No PDF path provided"}))
         sys.exit(1)
 
     results = []
-    for arg in sys.argv[1:]:
+    for arg in input_args:
         # Chaque argument est sous la forme "tmppath|||nomoriginal"
         if "|||" in arg:
             pdf_path, orig_name = arg.split("|||", 1)
