@@ -138,7 +138,7 @@ def parse_destinataire(text: str) -> dict:
     Extrait nom complet, adresse complète et téléphone depuis le texte
     de la zone "Adresse du destinataire".
     """
-    result = {"nom_complet": "", "adresse_complete": "", "telephone": ""}
+    result = {"nom_complet": "", "adresse_complete": "", "code_postal": "", "telephone": ""}
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
@@ -230,7 +230,20 @@ def parse_destinataire(text: str) -> dict:
                 addr_parts.append(clean_line)
 
     result["nom_complet"] = " ".join(nom_lines)
-    result["adresse_complete"] = " ".join(addr_parts)
+    
+    # 5. Extraire le code postal de l'adresse
+    raw_addr = " ".join(addr_parts)
+    cp_match = re.search(r"\b(\d{5})\b", raw_addr)
+    code_postal = ""
+    if cp_match:
+        code_postal = cp_match.group(1)
+        # "Couper" le code postal de l'adresse
+        raw_addr = raw_addr.replace(code_postal, "").strip()
+        # Nettoyer les espaces multiples
+        raw_addr = " ".join(raw_addr.split())
+
+    result["adresse_complete"] = raw_addr
+    result["code_postal"] = code_postal
 
     # Nettoyage final des caractères parasites
     for k in result:

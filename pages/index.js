@@ -44,7 +44,15 @@ export default function Home() {
       const r = await fetch("/api/extract", { method: "POST", body: fd });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || "Erreur serveur");
-      setResults(data.results || []);
+
+      // Tri par code postal (blocks)
+      const sorted = (data.results || []).sort((a, b) => {
+        const cpA = String(a.code_postal || "99999"); // Les sans-CP à la fin
+        const cpB = String(b.code_postal || "99999");
+        return cpA.localeCompare(cpB);
+      });
+
+      setResults(sorted);
       setStatus(STATUS.DONE);
     } catch (e) {
       setError(e.message);
@@ -61,8 +69,8 @@ export default function Home() {
   };
 
   const exportCSV = () => {
-    const header = ["Fichier", "Destinataire", "Adresse Complète", "Téléphone"];
-    const rows = results.map((r) => [r.fichier, r.nom_complet, r.adresse_complete, r.telephone]);
+    const header = ["Fichier", "Destinataire", "Code Postal", "Adresse", "Téléphone"];
+    const rows = results.map((r) => [r.fichier, r.nom_complet, r.code_postal, r.adresse_complete, r.telephone]);
     const csv = [header, ...rows]
       .map((row) => row.map((v) => `"${(v ?? "").replace(/"/g, '""')}"`).join(","))
       .join("\n");
@@ -74,7 +82,8 @@ export default function Home() {
       results.map((r) => ({
         Fichier: r.fichier,
         Destinataire: r.nom_complet,
-        "Adresse Complète": r.adresse_complete,
+        "Code Postal": r.code_postal,
+        Adresse: r.adresse_complete,
         Téléphone: r.telephone,
       }))
     );
@@ -208,6 +217,7 @@ export default function Home() {
                     <tr>
                       <th>Fichier</th>
                       <th>Destinataire</th>
+                      <th>Code Postal</th>
                       <th>Adresse</th>
                       <th>Téléphone</th>
                     </tr>
@@ -223,6 +233,7 @@ export default function Home() {
                         ) : (
                           <>
                             <td>{r.nom_complet || <span className="empty">—</span>}</td>
+                            <td className="cell-mono">{r.code_postal || <span className="empty">—</span>}</td>
                             <td>{r.adresse_complete || <span className="empty">—</span>}</td>
                             <td className="cell-mono">{r.telephone || <span className="empty">—</span>}</td>
                           </>
